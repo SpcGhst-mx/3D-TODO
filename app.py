@@ -10,12 +10,13 @@ DB_NAME = "inventario_filamentos.db"
 class InventarioFilamentosApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Gestor de Inventario, Cotizador y Historial 3D")
+        self.root.title("Gestor de Inventario, Cotizador e Historial 3D")
         self.root.geometry("1180x720")
         self.root.minsize(1020, 620)
         self.root.configure(bg="#f4f6f9")
 
         self.id_seleccionado = None
+        self.id_historial_seleccionado = None
         self.mapa_bobinas_calc = {}
         self.ultimo_resumen_texto = ""
         self.ruta_imagen_pieza = None
@@ -235,7 +236,6 @@ class InventarioFilamentosApp:
         frame_calc_main = tk.Frame(self.tab_calculadora, bg="#f4f6f9", padx=15, pady=12)
         frame_calc_main.pack(fill="both", expand=True)
 
-        # Columna Izquierda: Parámetros
         frame_inputs = tk.LabelFrame(
             frame_calc_main, text=" Parámetros de la Pieza y Energía ",
             bg="white", fg="#1e293b", font=("Segoe UI", 11, "bold"), padx=15, pady=10
@@ -312,7 +312,6 @@ class InventarioFilamentosApp:
             bg="#3b82f6", fg="white", font=("Segoe UI", 10, "bold"), relief="flat", pady=6, cursor="hand2"
         ).pack(fill="x", pady=3)
 
-        # Columna Central: Imagen de la pieza (Min 500x500px)
         frame_img_panel = tk.LabelFrame(
             frame_calc_main, text=" Imagen de la Pieza (Mín. 500x500 px) ",
             bg="white", fg="#1e293b", font=("Segoe UI", 11, "bold"), padx=12, pady=10, width=240
@@ -333,7 +332,6 @@ class InventarioFilamentosApp:
             bg="#94a3b8", fg="white", font=("Segoe UI", 8, "bold"), relief="flat", pady=3, cursor="hand2"
         ).pack(fill="x")
 
-        # Columna Derecha: Desglose y Acciones
         frame_res = tk.LabelFrame(
             frame_calc_main, text=" Desglose y Cotización ",
             bg="white", fg="#1e293b", font=("Segoe UI", 11, "bold"), padx=15, pady=10, width=370
@@ -377,17 +375,25 @@ class InventarioFilamentosApp:
         frame_tools_h = tk.Frame(frame_hist_main, bg="white", padx=12, pady=10)
         frame_tools_h.pack(fill="x", pady=(0, 10))
 
-        tk.Label(frame_tools_h, text="📜 Registro de piezas impresas y cotizadas", bg="white", font=("Segoe UI", 11, "bold"), fg="#1e293b").pack(side="left")
+        tk.Label(frame_tools_h, text="🔍 Buscar en Historial:", bg="white", font=("Segoe UI", 10, "bold")).pack(side="left")
+        self.var_buscar_historial = tk.StringVar()
+        self.var_buscar_historial.trace_add("write", lambda *args: self.cargar_historial())
+        ttk.Entry(frame_tools_h, textvariable=self.var_buscar_historial, width=22, font=("Segoe UI", 10)).pack(side="left", padx=8)
 
         tk.Button(
-            frame_tools_h, text="📊 Exportar Historial CSV", command=self.exportar_historial_csv,
-            bg="#64748b", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=4, cursor="hand2"
-        ).pack(side="right")
+            frame_tools_h, text="📊 Exportar CSV", command=self.exportar_historial_csv,
+            bg="#64748b", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=8, pady=4, cursor="hand2"
+        ).pack(side="right", padx=4)
 
         tk.Button(
-            frame_tools_h, text="🗑️ Borrar Historial", command=self.borrar_historial,
-            bg="#ef4444", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=4, cursor="hand2"
-        ).pack(side="right", padx=6)
+            frame_tools_h, text="🗑️ Eliminar Seleccionado", command=self.eliminar_historial_seleccionado,
+            bg="#ef4444", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=8, pady=4, cursor="hand2"
+        ).pack(side="right", padx=4)
+
+        tk.Button(
+            frame_tools_h, text="🧹 Vaciar Todo", command=self.borrar_historial,
+            bg="#991b1b", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=8, pady=4, cursor="hand2"
+        ).pack(side="right", padx=4)
 
         frame_tabla_h = tk.Frame(frame_hist_main, bg="white")
         frame_tabla_h.pack(fill="both", expand=True)
@@ -417,6 +423,7 @@ class InventarioFilamentosApp:
 
         self.tabla_historial.pack(side="left", fill="both", expand=True)
         scrollbar_h.pack(side="right", fill="y")
+        self.tabla_historial.bind("<<TreeviewSelect>>", self.seleccionar_fila_historial)
 
     def crear_fila_resultado(self, parent, texto_izq, texto_der, bold=False, color="#475569"):
         fila = tk.Frame(parent, bg="white", pady=3)
@@ -543,13 +550,11 @@ class InventarioFilamentosApp:
         if not confirmar:
             return
 
-        # 1. Descontar del inventario
         nuevo_peso = max(0.0, round(datos_b["peso_act"] - gramos, 2))
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("UPDATE filamentos SET peso_actual=? WHERE id=?", (nuevo_peso, datos_b["id"]))
 
-        # 2. Guardar en historial
         fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M")
         ruta_img_guardar = self.ruta_imagen_pieza if self.ruta_imagen_pieza else "Ninguna"
         cursor.execute("""
@@ -571,13 +576,41 @@ class InventarioFilamentosApp:
             self.root.clipboard_append(self.ultimo_resumen_texto)
             messagebox.showinfo("Copiado", "Resumen copiado al portapapeles.")
 
+    def seleccionar_fila_historial(self, event):
+        sel = self.tabla_historial.selection()
+        if not sel: return
+        vals = self.tabla_historial.item(sel[0])["values"]
+        self.id_historial_seleccionado = vals[0]
+
+    def eliminar_historial_seleccionado(self):
+        if not self.id_historial_seleccionado:
+            messagebox.showwarning("Sin selección", "Selecciona primero una fila del historial de impresiones.")
+            return
+
+        confirmar = messagebox.askyesno("Confirmar", f"¿Deseas eliminar el registro de historial ID #{self.id_historial_seleccionado}?")
+        if confirmar:
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM historial_impresiones WHERE id=?", (self.id_historial_seleccionado,))
+            conn.commit()
+            conn.close()
+            self.id_historial_seleccionado = None
+            self.cargar_historial()
+
     def cargar_historial(self):
         for fila in self.tabla_historial.get_children():
             self.tabla_historial.delete(fila)
+        self.id_historial_seleccionado = None
 
+        filtro = f"%{self.var_buscar_historial.get().strip()}%"
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("SELECT id, fecha, pieza, bobina, gramos, tiempo, costo_produccion, precio_venta, ruta_imagen FROM historial_impresiones ORDER BY id DESC")
+        cursor.execute("""
+            SELECT id, fecha, pieza, bobina, gramos, tiempo, costo_produccion, precio_venta, ruta_imagen 
+            FROM historial_impresiones 
+            WHERE pieza LIKE ? OR bobina LIKE ? OR fecha LIKE ?
+            ORDER BY id DESC
+        """, (filtro, filtro, filtro))
         filas = cursor.fetchall()
         conn.close()
 
@@ -588,7 +621,7 @@ class InventarioFilamentosApp:
             ))
 
     def borrar_historial(self):
-        confirmar = messagebox.askyesno("Confirmar", "¿Deseas vaciar todo el historial de impresiones?")
+        confirmar = messagebox.askyesno("Confirmar", "¿Deseas vaciar por completo todo el historial de impresiones?")
         if confirmar:
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
@@ -598,13 +631,8 @@ class InventarioFilamentosApp:
             self.cargar_historial()
 
     def exportar_historial_csv(self):
-        ruta = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("Archivo CSV", "*.csv")],
-            initialfile="historial_impresiones.csv"
-        )
-        if not ruta:
-            return
+        ruta = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")], initialfile="historial_impresiones.csv")
+        if not ruta: return
 
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
